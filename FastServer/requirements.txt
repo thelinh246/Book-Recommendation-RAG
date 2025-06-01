@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+chromadb
+transformers
+sentence-transformers
+rank_bm25
+deep-translator
+google-generativeai
+redis
+langgraph
+langsmith
