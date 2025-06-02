@@ -5,6 +5,7 @@ from typing import TypedDict, Literal
 class QueryInput(BaseModel):
     query: str
     lang: str = "vi"
+    session_id: str | None = None
 
 class BookRecord:
     def __init__(self, text: str):

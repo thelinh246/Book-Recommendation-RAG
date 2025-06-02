@@ -14,7 +14,9 @@ import {
   Sun,
   Moon,
   AlertCircle,
-  Check
+  Check,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 
 const ChatGPTUI = () => {
@@ -31,9 +33,17 @@ const ChatGPTUI = () => {
   const [editingTitle, setEditingTitle] = useState(null);
   const [editTitleValue, setEditTitleValue] = useState('');
   
+  // Autocomplete states
+  const [autocompleteResults, setAutocompleteResults] = useState([]);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+  const [autocompleteLoading, setAutocompleteLoading] = useState(false);
+  
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const titleInputRef = useRef(null);
+  const autocompleteRef = useRef(null);
+  const autocompleteTimeoutRef = useRef(null);
 
   const API_BASE_URL = 'http://127.0.0.1:8000';
 
@@ -72,6 +82,80 @@ const ChatGPTUI = () => {
   useEffect(() => {
     loadChatSessions();
   }, []);
+
+  // Autocomplete effect
+  useEffect(() => {
+    // Clear existing timeout
+    if (autocompleteTimeoutRef.current) {
+      clearTimeout(autocompleteTimeoutRef.current);
+    }
+
+    // Only fetch autocomplete if we have a session and input
+    if (inputValue.trim().length > 0 && currentSessionId) {
+      autocompleteTimeoutRef.current = setTimeout(() => {
+        fetchAutocomplete(inputValue.trim());
+      }, 300); // Debounce for 300ms
+    } else {
+      setShowAutocomplete(false);
+      setAutocompleteResults([]);
+    }
+
+    return () => {
+      if (autocompleteTimeoutRef.current) {
+        clearTimeout(autocompleteTimeoutRef.current);
+      }
+    };
+  }, [inputValue, currentSessionId]);
+
+  // Close autocomplete when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (autocompleteRef.current && !autocompleteRef.current.contains(event.target) && 
+          textareaRef.current && !textareaRef.current.contains(event.target)) {
+        setShowAutocomplete(false);
+        setSelectedSuggestionIndex(-1);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const fetchAutocomplete = async (inputPrefix) => {
+    if (!currentSessionId || inputPrefix.length < 1) return;
+
+    try {
+      setAutocompleteLoading(true);
+      const response = await fetch(
+        `${API_BASE_URL}/sessions/${currentSessionId}/autocomplete?input_prefix=${encodeURIComponent(inputPrefix)}&limit=5`
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        setAutocompleteResults(data.completions || []);
+        setShowAutocomplete(data.completions && data.completions.length > 0);
+        setSelectedSuggestionIndex(-1);
+      } else {
+        setAutocompleteResults([]);
+        setShowAutocomplete(false);
+      }
+    } catch (error) {
+      console.error('Error fetching autocomplete:', error);
+      setAutocompleteResults([]);
+      setShowAutocomplete(false);
+    } finally {
+      setAutocompleteLoading(false);
+    }
+  };
+
+  const handleAutocompleteSelect = (suggestion) => {
+    setInputValue(suggestion);
+    setShowAutocomplete(false);
+    setSelectedSuggestionIndex(-1);
+    textareaRef.current?.focus();
+  };
 
   const showNotification = (message, type = 'info') => {
     setNotification({ message, type });
@@ -229,8 +313,9 @@ const ChatGPTUI = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-        query: message, // Map 'message' to 'query'
-        lang: 'vi',     // Set a default language or make it dynamic
+          query: message,
+          lang: 'vi',
+          session_id: currentSessionId,  // Gửi kèm session_id trong body
         }),
       });
 
@@ -296,15 +381,52 @@ const ChatGPTUI = () => {
     
     const messageToSend = inputValue;
     setInputValue('');
+    setShowAutocomplete(false);
+    setSelectedSuggestionIndex(-1);
     
     // Pass the updated messages to the API call
     await sendMessageToAPI(messageToSend, updatedMessages);
   };
 
   const handleKeyPress = (e) => {
+    if (showAutocomplete && autocompleteResults.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev => 
+          prev < autocompleteResults.length - 1 ? prev + 1 : 0
+        );
+        return;
+      }
+      
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev => 
+          prev > 0 ? prev - 1 : autocompleteResults.length - 1
+        );
+        return;
+      }
+      
+      if (e.key === 'Tab' && selectedSuggestionIndex >= 0) {
+        e.preventDefault();
+        handleAutocompleteSelect(autocompleteResults[selectedSuggestionIndex]);
+        return;
+      }
+      
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowAutocomplete(false);
+        setSelectedSuggestionIndex(-1);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSendMessage();
+      if (showAutocomplete && selectedSuggestionIndex >= 0) {
+        handleAutocompleteSelect(autocompleteResults[selectedSuggestionIndex]);
+      } else {
+        handleSendMessage();
+      }
     }
   };
 
@@ -312,6 +434,8 @@ const ChatGPTUI = () => {
     setMessages([]);
     setActiveChat(null);
     setCurrentSessionId(null);
+    setShowAutocomplete(false);
+    setAutocompleteResults([]);
   };
 
   const handleChatClick = (chat) => {
@@ -579,43 +703,87 @@ const ChatGPTUI = () => {
                   </div>
                 </div>
               )}
+              
               <div ref={messagesEndRef} />
             </div>
           )}
         </div>
 
         {/* Input Area */}
-        <div className={`p-4 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-          <div className="max-w-4xl mx-auto">
-            <div className={`relative rounded-xl border ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'} shadow-sm`}>
+        <div className={`border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'} p-4`}>
+          <div className="max-w-4xl mx-auto relative">
+            {/* Autocomplete Dropdown */}
+            {showAutocomplete && autocompleteResults.length > 0 && (
+              <div 
+                ref={autocompleteRef}
+                className={`absolute bottom-full left-0 right-0 mb-2 ${
+                  darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'
+                } border rounded-lg shadow-lg max-h-48 overflow-y-auto z-10`}
+              >
+                {autocompleteLoading && (
+                  <div className="p-3 text-center">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500 mx-auto"></div>
+                  </div>
+                )}
+                {!autocompleteLoading && autocompleteResults.map((suggestion, index) => (
+                  <div
+                    key={index}
+                    className={`p-3 cursor-pointer flex items-center justify-between ${
+                      index === selectedSuggestionIndex 
+                        ? (darkMode ? 'bg-gray-700' : 'bg-gray-100')
+                        : (darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50')
+                    } ${index === 0 ? 'rounded-t-lg' : ''} ${
+                      index === autocompleteResults.length - 1 ? 'rounded-b-lg' : 'border-b border-gray-200 dark:border-gray-600'
+                    }`}
+                    onClick={() => handleAutocompleteSelect(suggestion)}
+                  >
+                    <span className="text-sm">{suggestion}</span>
+                    {index === selectedSuggestionIndex && (
+                      <span className="text-xs text-gray-500">Tab to select</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className={`flex space-x-3 ${darkMode ? 'bg-gray-800' : 'bg-gray-50'} rounded-lg p-3`}>
               <textarea
                 ref={textareaRef}
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyPress}
                 placeholder="Nhập tin nhắn của bạn..."
-                className={`w-full p-4 pr-12 resize-none rounded-xl border-none outline-none focus:ring-2 focus:ring-blue-500 ${
-                  darkMode ? 'bg-gray-800 text-white placeholder-gray-400' : 'bg-white text-gray-900 placeholder-gray-500'
-                }`}
+                className={`flex-1 resize-none border-0 bg-transparent outline-none text-sm ${
+                  darkMode ? 'text-white placeholder-gray-400' : 'text-gray-900 placeholder-gray-500'
+                } max-h-48`}
                 rows={1}
-                style={{ minHeight: '52px', maxHeight: '200px' }}
                 disabled={isTyping}
               />
               <button
                 onClick={handleSendMessage}
-                disabled={inputValue.trim() === '' || isTyping}
-                className={`absolute right-2 top-1/2 transform -translate-y-1/2 p-2 rounded-lg transition-all ${
-                  inputValue.trim() === '' || isTyping
-                    ? (darkMode ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 cursor-not-allowed')
-                    : 'text-white bg-blue-500 hover:bg-blue-600 shadow-sm hover:shadow-md'
+                disabled={!inputValue.trim() || isTyping}
+                className={`flex-shrink-0 p-2 rounded-lg transition-colors ${
+                  inputValue.trim() && !isTyping
+                    ? 'bg-blue-500 hover:bg-blue-600 text-white' 
+                    : (darkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-400')
                 }`}
               >
-                <Send size={16} />
+                <Send size={18} />
               </button>
             </div>
-            <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'} text-center`}>
-              Book Recommendation System có thể mắc lỗi. Hãy kiểm tra thông tin quan trọng.
-            </div>
+            
+            {/* Keyboard shortcuts hint */}
+            {showAutocomplete && autocompleteResults.length > 0 && (
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'} mt-2 flex items-center space-x-4`}>
+                <span className="flex items-center space-x-1">
+                  <ChevronUp size={12} />
+                  <ChevronDown size={12} />
+                  <span>Navigate</span>
+                </span>
+                <span>Tab to select</span>
+                <span>Esc to close</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

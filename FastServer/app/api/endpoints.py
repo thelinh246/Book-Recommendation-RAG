@@ -1,7 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.models.schemas import QueryInput, SessionInput, UpdateTitleInput
 from app.services.rag import run_rag_workflow
-from app.services.redis_session import save_message_to_session, list_all_sessions, get_session_messages, delete_session, update_session_title
+from app.services.redis_session import save_message_to_session, list_all_sessions, get_session_messages, delete_session, update_session_title, get_autocomplete_suggestions, get_answer_for_user_query
 from app.services.search_engine import run_duckduckgo_workflow
 from app.services.intent_detection import run_intent_workflow
 
@@ -9,14 +9,20 @@ router = APIRouter()
 
 @router.post("/response")
 async def bot_response(input: QueryInput):
-    intent = run_intent_workflow(input.query)
-    print(intent)
-    if intent == "use_rag":
-        response = run_rag_workflow(input.query, input.lang)
-    elif intent == "use_ddg":
-        response = run_duckduckgo_workflow(input.query, input.lang)
-    else:
-        response = "I cannot fulfill your request!"
+    response = None
+    if input.session_id:
+        response = get_answer_for_user_query(input.session_id, input.query)
+
+    if response is None:
+        # DB hoặc session không có, gọi LLM hoặc các workflow khác
+        intent = run_intent_workflow(input.query)
+        if intent == "use_rag":
+            response = run_rag_workflow(input.query, input.lang)
+        elif intent == "use_ddg":
+            response = run_duckduckgo_workflow(input.query, input.lang)
+        else:
+            response = "I cannot fulfill your request!"
+
     return {"response": response}
 
 @router.post("/sessions")
@@ -47,3 +53,12 @@ async def update_title(session_id: str, input: UpdateTitleInput):
     if not success:
         raise HTTPException(status_code=404, detail="Session not found.")
     return {"noti": "Title updated successfully."}
+
+@router.get("/sessions/{session_id}/autocomplete")
+async def autocomplete(
+    session_id: str,
+    input_prefix: str = Query(..., min_length=1),
+    limit: int = 5
+    ):
+    completions = get_autocomplete_suggestions(session_id, input_prefix, limit)
+    return {"completions": completions}
